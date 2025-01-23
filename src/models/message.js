@@ -8,7 +8,8 @@ const messageSchema = new mongoose.Schema({
     },
     message_id: {
         type: Number,
-        required: true
+        required: true,
+        unique: true
     },
     user_id: {
         type: Number,
@@ -26,6 +27,14 @@ const messageSchema = new mongoose.Schema({
     text: String,
     file_id: String,
     reply_to_message_id: Number,
+    original_message: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Message'
+    },
+    response_time: {
+        type: Number,
+        default: null
+    },
     is_edited: {
         type: Boolean,
         default: false
@@ -40,6 +49,12 @@ const messageSchema = new mongoose.Schema({
         index: true
     }
 });
+
+// Indekslar
+messageSchema.index({ message_id: 1 }, { unique: true });
+messageSchema.index({ chat_id: 1, created_at: 1 });
+messageSchema.index({ user_id: 1, created_at: 1 });
+messageSchema.index({ reply_to_message_id: 1 });
 
 const Message = mongoose.model('Message', messageSchema);
 
