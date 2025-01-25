@@ -9,7 +9,7 @@ const messageSchema = new mongoose.Schema({
     message_id: {
         type: Number,
         required: true,
-        unique: true
+        unique: true  // Bu avtomatik ravishda indeks yaratadi
     },
     user_id: {
         type: Number,
@@ -49,7 +49,7 @@ const messageSchema = new mongoose.Schema({
     response_to: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Message',
-        sparse: true
+        index: true  // Qo'shildi chunki bu maydon bo'yicha qidiruv ko'p bo'ladi
     },
     response_time: {
         type: Number, // Response time in minutes
@@ -67,9 +67,8 @@ const messageSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Indekslarni bir marta e'lon qilish
-messageSchema.index({ message_id: 1 });
-messageSchema.index({ created_at: 1 });
+// Compound indeks qo'shamiz - bu ko'p ishlatiladigan so'rovlar uchun
+messageSchema.index({ chat_id: 1, created_at: -1 });
 
 // Static method to generate monthly report
 messageSchema.statics.generateMonthlyReport = async function(year, month) {

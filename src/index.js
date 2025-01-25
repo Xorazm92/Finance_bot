@@ -1,4 +1,4 @@
-const { Bot } = require('grammy');
+const { Bot, session, InputFile } = require('grammy');
 const express = require('express');
 const mongoose = require('mongoose');
 const logger = require('./config/logger');
@@ -159,16 +159,27 @@ bot.command('hisobot', async (ctx) => {
             // Hisobotni maxsus guruhga yuborish
             for (const chatId of reportIds) {
                 try {
-                    await bot.api.sendDocument(chatId, {
-                        source: tempFilePath,
-                        caption: `📊 ${year}-yil ${month}-oy uchun hisobot\n\n` +
-                                `📅 Davr: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}\n` +
-                                `📝 Jami xabarlar: ${formattedMessages.length}\n\n` +
-                                `🔍 So'rov yuborgan guruh: ${ctx.chat.title || ctx.chat.id}\n` +
-                                `👤 So'rov yuborgan foydalanuvchi: ${ctx.from.first_name}`
+                    const caption = `📊 ${year}-yil ${month}-oy uchun hisobot\n\n` +
+                                  `📅 Davr: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}\n` +
+                                  `📝 Jami xabarlar: ${formattedMessages.length}\n\n` +
+                                  `🔍 So'rov yuborgan guruh: ${ctx.chat.title || ctx.chat.id}\n` +
+                                  `👤 So'rov yuborgan foydalanuvchi: ${ctx.from.first_name}`;
+
+                    // Faylni yuborish
+                    await ctx.api.sendDocument(chatId, new InputFile(tempFilePath), {
+                        caption: caption
                     });
+
+                    logger.info('Fayl muvaffaqiyatli yuborildi');
+
                 } catch (error) {
-                    logger.error(`Hisobotni yuborishda xatolik (chat_id: ${chatId}):`, error);
+                    const errorDetails = {
+                        error: error.toString(),
+                        stack: error.stack,
+                        chatId: chatId,
+                    };
+                    
+                    logger.error('Xatolik tafsilotlari:', errorDetails);
                 }
             }
 
