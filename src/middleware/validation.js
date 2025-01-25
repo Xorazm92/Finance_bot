@@ -2,7 +2,7 @@ const validateUser = (telegramId, username, lavozim) => {
     const errors = [];
 
     if (!telegramId || typeof telegramId !== 'number') {
-        errors.push('Telegram ID noto'g'ri formatda');
+        errors.push('Telegram ID noto/g\'ri formatda');
     }
 
     if (!username || typeof username !== 'string') {

@@ -1,21 +1,60 @@
 const { Bot } = require('grammy');
-const { ulanishMongoDB } = require('./models');
-const { vazifaYaratish, vazifaniNazoratgaOlish, javobYozish, oylikHisobotYaratish } = require('./controllers/taskController');
-const { xabarniSaqlash, guruhStatistikasi, hisobotniEmailgaYuborish } = require('./controllers/messageController');
-const { guruhTekshirish, isStaff, isAccountant, isManager, isMonitor, isAdmin } = require('./middleware/auth');
-const moment = require('moment');
+const express = require('express');
+const mongoose = require('mongoose');
+const logger = require('./config/logger');
 require('dotenv').config();
 
-// Botni yaratish
+// Express app setup
+const app = express();
+app.use(express.json());
+
+// Bot setup
 const bot = new Bot(process.env.BOT_TOKEN);
 
+// MongoDB connection with proper error handling
+mongoose.connect(process.env.MONGODB_URI)
+.then(() => {
+    logger.info('MongoDB ulanish muvaffaqiyatli');
+    
+    // Only start Express server after successful DB connection
+    const PORT = process.env.PORT || 3333;
+    app.listen(PORT, () => {
+        logger.info(`Server ${PORT} portida ishga tushdi`);
+    });
+})
+.catch(err => {
+    logger.error('MongoDB ulanish xatosi:', err);
+    process.exit(1);
+});
+
+// Add error handling middleware
+app.use((err, req, res, next) => {
+    logger.error('Server xatosi:', { error: err.message, stack: err.stack });
+    res.status(500).json({
+        success: false,
+        message: 'Serverda xatolik yuz berdi',
+        error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+});
+
+// Routes
+app.use('/api/reports', require('./routes/reportRoutes'));
+
 // Guruh tekshirish middleware
-bot.use(guruhTekshirish);
+bot.use(require('./middleware/auth').guruhTekshirish);
 
 // Har bir xabarni saqlash (middleware sifatida)
 bot.use(async (ctx, next) => {
     if (ctx.message) {
-        await xabarniSaqlash(ctx);
+        try {
+            await require('./controllers/messageController').xabarniSaqlash(ctx);
+            logger.info('Yangi xabar saqlandi', {
+                from: ctx.from.id,
+                messageId: ctx.message.message_id
+            });
+        } catch (error) {
+            logger.error('Xabarni saqlashda xatolik:', error);
+        }
     }
     await next();
 });
@@ -40,7 +79,7 @@ bot.command('start', async (ctx) => {
 // Nazorat buyrug'i
 bot.command('nazorat', async (ctx) => {
     try {
-        if (!isMonitor(ctx.from.id)) {
+        if (!require('./middleware/auth').isMonitor(ctx.from.id)) {
             await ctx.reply("Kechirasiz, siz nazoratchi emassiz!");
             return;
         }
@@ -50,42 +89,106 @@ bot.command('nazorat', async (ctx) => {
             return;
         }
 
-        const vazifa = await vazifaniNazoratgaOlish(ctx);
+        const vazifa = await require('./controllers/taskController').vazifaniNazoratgaOlish(ctx);
         await ctx.reply(
-            " Savol nazoratga olindi!\n\n" +
-            ` Savol: ${vazifa.savol_matni}\n` +
-            ` Nazoratchi: ${ctx.from.first_name}`
+            "✅ Savol nazoratga olindi!\n\n" +
+            `📝 Savol: ${vazifa.savol_matni}\n` +
+            `👤 Nazoratchi: ${ctx.from.first_name}`
         );
     } catch (error) {
-        await ctx.reply(" Xatolik: " + error.message);
+        logger.error('Nazorat buyrug\'ida xatolik:', error);
+        await ctx.reply("❌ Xatolik: " + error.message);
     }
 });
 
 // Hisobot buyrug'i
 bot.command('hisobot', async (ctx) => {
     try {
-        // Faqat guruh adminiga ruxsat berish
-        if (!isAdmin(ctx.from.id)) {
+        // Faqat admin va nazoratchilar uchun
+        if (!require('./middleware/auth').isMonitor(ctx.from.id)) {
             await ctx.reply("Kechirasiz, hisobot olish huquqingiz yo'q!");
             return;
         }
 
-        await ctx.reply("Hisobot tayyorlanmoqda...");
-        const hisobotYoli = await oylikHisobotYaratish();
-        
-        // Hisobotni adminning shaxsiy chatiga yuborish
-        try {
-            await bot.api.sendDocument(process.env.ADMIN_ID, {
-                source: hisobotYoli,
-                filename: hisobotYoli.split('/').pop()
-            });
-            await ctx.reply(" Hisobot sizning shaxsiy chatingizga yuborildi!");
-        } catch (error) {
-            await ctx.reply(" Hisobotni yuborishda xatolik: Bot bilan shaxsiy chatni boshlang!");
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1;
+
+        // Hisobot yaratish
+        const reportIds = process.env.REPORT_IDS ? process.env.REPORT_IDS.split(',').map(id => parseInt(id)) : [];
+        if (!reportIds.length) {
+            await ctx.reply("Hisobotlar guruhi sozlanmagan!");
+            return;
         }
-        
+
+        await ctx.reply("📊 Hisobot tayyorlanmoqda...");
+
+        // Hisobotni yaratish va yuborish
+        try {
+            const { formattedMessages, startDate, endDate } = await require('./controllers/reportController').generateReport(year, month);
+            
+            // Excel faylni yaratish
+            const XLSX = require('xlsx');
+            const workbook = XLSX.utils.book_new();
+            const worksheet = XLSX.utils.json_to_sheet(formattedMessages);
+            
+            // Ustun kengliklari
+            const columnWidths = [
+                { wch: 20 }, // vaqt
+                { wch: 12 }, // chat_id
+                { wch: 12 }, // user_id
+                { wch: 15 }, // username
+                { wch: 20 }, // xabar_vaqti
+                { wch: 12 }, // xabar_turi
+                { wch: 50 }, // xabar
+                { wch: 15 }, // xodim
+                { wch: 15 }, // xodim_username
+                { wch: 20 }, // javob_vaqti
+                { wch: 12 }, // javob_turi
+                { wch: 50 }, // javob
+                { wch: 15 }  // javob_vaqti_farqi
+            ];
+            worksheet['!cols'] = columnWidths;
+
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Hisobot');
+            
+            // Faylni vaqtincha saqlash
+            const tempFilePath = `/tmp/hisobot_${year}_${month}.xlsx`;
+            XLSX.writeFile(workbook, tempFilePath);
+
+            // Hisobotni maxsus guruhga yuborish
+            for (const chatId of reportIds) {
+                try {
+                    await bot.api.sendDocument(chatId, {
+                        source: tempFilePath,
+                        caption: `📊 ${year}-yil ${month}-oy uchun hisobot\n\n` +
+                                `📅 Davr: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}\n` +
+                                `📝 Jami xabarlar: ${formattedMessages.length}\n\n` +
+                                `🔍 So'rov yuborgan guruh: ${ctx.chat.title || ctx.chat.id}\n` +
+                                `👤 So'rov yuborgan foydalanuvchi: ${ctx.from.first_name}`
+                    });
+                } catch (error) {
+                    logger.error(`Hisobotni yuborishda xatolik (chat_id: ${chatId}):`, error);
+                }
+            }
+
+            // Faylni o'chirish
+            require('fs').unlinkSync(tempFilePath);
+
+            // So'rov yuborilgan guruhga xabar
+            await ctx.reply(
+                "✅ Hisobot tayyorlandi va maxsus guruhga yuborildi!\n\n" +
+                `📅 Davr: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}\n` +
+                `📝 Jami xabarlar: ${formattedMessages.length}`
+            );
+
+        } catch (error) {
+            logger.error('Hisobotni yaratishda xatolik:', error);
+            await ctx.reply("❌ Hisobotni yaratishda xatolik yuz berdi: " + error.message);
+        }
     } catch (error) {
-        await ctx.reply(" Xatolik: " + error.message);
+        logger.error('Hisobot buyrug\'ida xatolik:', error);
+        await ctx.reply("❌ Xatolik: " + error.message);
     }
 });
 
@@ -93,176 +196,74 @@ bot.command('hisobot', async (ctx) => {
 bot.command('statistika', async (ctx) => {
     try {
         // Faqat admin uchun
-        if (!isAdmin(ctx.from.id)) {
+        if (!require('./middleware/auth').isAdmin(ctx.from.id)) {
             await ctx.reply("Kechirasiz, statistika olish huquqingiz yo'q!");
             return;
         }
 
-        // Argumentlarni tekshirish
-        const args = ctx.message.text.split(' ');
-        let startDate, endDate;
-
-        if (args.length === 1) {
-            // Agar sana berilmagan bo'lsa, joriy oyni olish
-            startDate = moment().startOf('month').toDate();
-            endDate = moment().endOf('month').toDate();
-        } else if (args.length === 2) {
-            // Agar bitta sana berilgan bo'lsa (YYYY-MM formatida)
-            const [year, month] = args[1].split('-');
-            if (!year || !month || isNaN(year) || isNaN(month)) {
-                await ctx.reply("Noto'g'ri format. Ishlatish: /statistika [YYYY-MM]");
-                return;
-            }
-            startDate = moment(`${year}-${month}-01`).startOf('month').toDate();
-            endDate = moment(startDate).endOf('month').toDate();
-        } else {
-            await ctx.reply("Noto'g'ri format. Ishlatish: /statistika [YYYY-MM]");
-            return;
-        }
-
-        await ctx.reply("Statistika tayyorlanmoqda...");
-        
-        try {
-            const hisobotYoli = await guruhStatistikasi(startDate, endDate);
-            
-            // Hisobotni adminning shaxsiy chatiga yuborish
-            await bot.api.sendDocument(process.env.ADMIN_ID, {
-                source: hisobotYoli,
-                filename: hisobotYoli.split('/').pop()
-            });
-            await ctx.reply(" Statistika hisoboti sizning shaxsiy chatingizga yuborildi!");
-        } catch (error) {
-            if (error.message === 'Bu davr uchun xabarlar topilmadi') {
-                await ctx.reply(" Bu davr uchun xabarlar topilmadi. Iltimos boshqa sanani tanlang.");
-            } else {
-                await ctx.reply(" Hisobotni yuborishda xatolik: Bot bilan shaxsiy chatni boshlang!");
-            }
-        }
-        
+        const stats = await require('./controllers/statsController').getStats();
+        await ctx.reply(
+            "📊 Bot statistikasi:\n\n" +
+            `📝 Jami xabarlar: ${stats.totalMessages}\n` +
+            `❓ Savollar: ${stats.questions}\n` +
+            `✅ Javoblar: ${stats.answers}\n` +
+            `⏱ O'rtacha javob vaqti: ${stats.avgResponseTime} daqiqa\n` +
+            `👥 Faol foydalanuvchilar: ${stats.activeUsers}\n` +
+            `📈 Bugun: ${stats.today.total} ta xabar\n` +
+            `   ├ Savollar: ${stats.today.questions}\n` +
+            `   └ Javoblar: ${stats.today.answers}`
+        );
     } catch (error) {
-        console.error('Statistika olishda xatolik:', error);
-        await ctx.reply(" Xatolik: " + error.message);
-    }
-});
-
-// Email orqali statistika olish
-bot.command('email_statistika', async (ctx) => {
-    try {
-        // Faqat admin uchun
-        if (!isAdmin(ctx.from.id)) {
-            await ctx.reply("Kechirasiz, statistika olish huquqingiz yo'q!");
-            return;
-        }
-
-        // Argumentlarni tekshirish
-        const args = ctx.message.text.split(' ');
-        let startDate, endDate;
-
-        if (args.length === 1) {
-            // Agar sana berilmagan bo'lsa, joriy oyni olish
-            startDate = moment().startOf('month').toDate();
-            endDate = moment().endOf('month').toDate();
-        } else if (args.length === 2) {
-            // Agar bitta sana berilgan bo'lsa (YYYY-MM formatida)
-            const [year, month] = args[1].split('-');
-            if (!year || !month || isNaN(year) || isNaN(month)) {
-                await ctx.reply("Noto'g'ri format. Ishlatish: /email_statistika [YYYY-MM]");
-                return;
-            }
-            startDate = moment(`${year}-${month}-01`).startOf('month').toDate();
-            endDate = moment(startDate).endOf('month').toDate();
-        } else {
-            await ctx.reply("Noto'g'ri format. Ishlatish: /email_statistika [YYYY-MM]");
-            return;
-        }
-
-        await ctx.reply("Statistika tayyorlanmoqda va emailga yuboriladi...");
-        
-        try {
-            const hisobotYoli = await guruhStatistikasi(startDate, endDate, true);
-            await ctx.reply(`✅ Statistika hisoboti ${process.env.GMAIL_USER} emailiga yuborildi!`);
-        } catch (error) {
-            if (error.message === 'Bu davr uchun xabarlar topilmadi') {
-                await ctx.reply("❌ Bu davr uchun xabarlar topilmadi. Iltimos boshqa sanani tanlang.");
-            } else {
-                console.error('Email yuborishda xatolik:', error);
-                await ctx.reply("❌ Hisobotni emailga yuborishda xatolik yuz berdi. Iltimos qaytadan urinib ko'ring.");
-            }
-        }
-        
-    } catch (error) {
-        console.error('Statistika olishda xatolik:', error);
+        logger.error('Statistika buyrug\'ida xatolik:', error);
         await ctx.reply("❌ Xatolik: " + error.message);
     }
 });
 
-// Xabarlarni qayta ishlash
+// Text xabarlarni qayta ishlash
 bot.on('message:text', async (ctx) => {
     try {
         // Agar reply qilingan bo'lsa - javob
         if (ctx.message.reply_to_message) {
-            if (!isStaff(ctx.from.id)) {
-                await ctx.reply("Kechirasiz, faqat xodimlar javob bera oladi!");
+            if (!require('./middleware/auth').isStaff(ctx.from.id)) {
+                await ctx.reply("Kechirasiz, siz xodim emassiz!");
                 return;
             }
 
-            const vazifa = await javobYozish(ctx);
+            const javob = await require('./controllers/messageController').javobniSaqlash(ctx);
             await ctx.reply(
-                " Javobingiz qabul qilindi!\n\n" +
-                ` Savol: ${vazifa.savol_matni}\n` +
-                ` Javob: ${ctx.message.text}\n` +
-                ` Javob beruvchi: ${ctx.from.first_name}`
+                "✅ Javob saqlandi!\n\n" +
+                `❓ Savol: ${javob.savol}\n` +
+                `✍️ Javob: ${javob.javob}\n` +
+                `⏱ Javob vaqti: ${javob.javobVaqti}`
             );
-            return;
         }
+        // Aks holda - yangi savol
+        else {
+            if (!require('./middleware/auth').isAccountant(ctx.from.id)) {
+                await ctx.reply("Kechirasiz, siz buxgalter emassiz!");
+                return;
+            }
 
-        // Agar buxgalter yozgan bo'lsa - yangi savol
-        if (isAccountant(ctx.from.id)) {
-            const vazifa = await vazifaYaratish(ctx);
+            const savol = await require('./controllers/messageController').savolniSaqlash(ctx);
             await ctx.reply(
-                " Yangi savol qabul qilindi!\n\n" +
-                ` Savol beruvchi: ${ctx.from.first_name}\n` +
-                ` Savol: ${vazifa.savol_matni}\n` +
-                " Javob berish vaqti: 10 daqiqa"
+                "✅ Savolingiz qabul qilindi!\n\n" +
+                `📝 Savol: ${savol.text}\n` +
+                "⏳ Javob kutilmoqda..."
             );
-            return;
         }
-
-        // Agar xodim yozgan bo'lsa - javob
-        if (isStaff(ctx.from.id)) {
-            const vazifa = await javobYozish(ctx);
-            await ctx.reply(
-                " Javobingiz qabul qilindi!\n\n" +
-                ` Savol: ${vazifa.savol_matni}\n` +
-                ` Javob: ${ctx.message.text}\n` +
-                ` Javob beruvchi: ${ctx.from.first_name}`
-            );
-            return;
-        }
-
-        await ctx.reply("Kechirasiz, siz savol berish yoki javob yozish huquqiga ega emassiz!");
-
     } catch (error) {
-        await ctx.reply(" Xatolik: " + error.message);
+        logger.error('Xabar qayta ishlashda xatolik:', error);
+        await ctx.reply("❌ Xatolik: " + error.message);
     }
-});
-
-// Xatoliklarni qayta ishlash
-bot.catch((err) => {
-    console.error('Bot xatosi:', err);
 });
 
 // Botni ishga tushirish
 async function botniIshgaTushirish() {
     try {
-        await ulanishMongoDB();
-        console.log('Bazaga ulandi');
-        
         await bot.start();
-        console.log('Bot ishga tushdi');
+        logger.info('Bot muvaffaqiyatli ishga tushdi');
     } catch (error) {
-        console.error('Ishga tushirishda xatolik:', error);
-        process.exit(1);
+        logger.error('Bot ishga tushishida xatolik:', error);
     }
 }
 

@@ -5,8 +5,16 @@ const { Foydalanuvchi } = require('../models');
 // Env dan ID larni olish
 const STAFF_IDS = process.env.STAFF_IDS ? process.env.STAFF_IDS.split(',').map(Number) : [];
 const ACCOUNTANT_IDS = process.env.ACCOUNTANT_IDS ? process.env.ACCOUNTANT_IDS.split(',').map(Number) : [];
+const MONITOR_IDS = process.env.MONITOR_IDS ? process.env.MONITOR_IDS.split(',').map(Number) : [];
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const GROUP_ID = Number(process.env.GROUP_ID);
+
+// Web route authentication middleware
+const auth = (req, res, next) => {
+    // TODO: Add proper authentication later
+    // For now, allow all requests
+    next();
+};
 
 // Guruh tekshirish
 async function guruhTekshirish(ctx, next) {
@@ -33,34 +41,26 @@ async function guruhTekshirish(ctx, next) {
 
 // Foydalanuvchi huquqlarini tekshirish
 function isStaff(userId) {
-    if (!process.env.STAFF_IDS) return false;
-    return process.env.STAFF_IDS.split(',').map(Number).includes(userId);
+    return STAFF_IDS.includes(userId) || isAdmin(userId);
 }
 
 function isAccountant(userId) {
-    if (!process.env.ACCOUNTANT_IDS) return false;
-    return process.env.ACCOUNTANT_IDS.split(',').map(Number).includes(userId);
-}
-
-function isManager(userId) {
-    if (!process.env.MANAGER_ID) return false;
-    return userId === Number(process.env.MANAGER_ID);
+    return ACCOUNTANT_IDS.includes(userId);
 }
 
 function isMonitor(userId) {
-    return isStaff(userId) || isAccountant(userId) || isManager(userId);
+    return MONITOR_IDS.includes(userId) || isAdmin(userId);
 }
 
-// Admin ekanligini tekshirish
 function isAdmin(userId) {
     return userId === ADMIN_ID;
 }
 
 module.exports = {
+    auth,
     guruhTekshirish,
     isStaff,
     isAccountant,
-    isManager,
     isMonitor,
     isAdmin
 };
